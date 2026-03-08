@@ -33,6 +33,8 @@ struct FetchRequest {
     /// Include links in the response (default: false).
     #[serde(default)]
     include_links: bool,
+    /// Max tokens in the markdown output (default: 50000). Truncates cleanly at paragraph boundaries.
+    max_tokens: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -78,8 +80,16 @@ async fn fetch_page(
             )
         })?;
 
+    // Re-extract with max_tokens limit if specified
+    let markdown = if req.max_tokens.is_some() {
+        let max_chars = req.max_tokens.map(|t| t * 4);
+        extractor::html_to_markdown(&result.raw_html, max_chars)
+    } else {
+        result.markdown
+    };
+
     // Rough token estimate: ~4 chars per token
-    let token_estimate = result.markdown.len() / 4;
+    let token_estimate = markdown.len() / 4;
 
     let links = if req.include_links {
         Some(
@@ -99,7 +109,7 @@ async fn fetch_page(
     Ok(Json(FetchResponse {
         url: result.url,
         title: result.title,
-        markdown: result.markdown,
+        markdown,
         links,
         token_estimate,
     }))

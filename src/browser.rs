@@ -22,6 +22,7 @@ pub struct FetchResult {
     pub url: String,
     pub title: String,
     pub markdown: String,
+    pub raw_html: String,
     pub links: Vec<Link>,
 }
 
@@ -150,13 +151,14 @@ impl BrowserPool {
         page.close().await?;
 
         // Extract markdown and links
-        let markdown = extractor::html_to_markdown(&html);
+        let markdown = extractor::html_to_markdown(&html, None);
         let links = extractor::extract_links(&html);
 
         Ok(FetchResult {
             url: current_url,
             title,
             markdown,
+            raw_html: html,
             links,
         })
     }
