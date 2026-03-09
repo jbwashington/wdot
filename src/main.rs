@@ -120,14 +120,14 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "webfetch=info".into()),
+                .unwrap_or_else(|_| "wdot=info".into()),
         )
         .init();
 
     let config = Config::from_env();
 
     tracing::info!(
-        "Starting webfetch on {}:{}",
+        "Starting wdot on {}:{}",
         config.host,
         config.port
     );

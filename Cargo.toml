@@ -1,8 +1,8 @@
 [package]
-name = "webfetch"
+name = "wdot"
 version = "0.1.0"
 edition = "2021"
-description = "A fast, token-efficient headless browser fetcher for AI agents with captcha solving"
+description = "wdot (Web Dynamic Output Tool) — a fast, stealthy headless browser for AI agents with captcha solving"
 
 [dependencies]
 axum = { version = "0.7", features = ["json"] }

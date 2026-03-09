@@ -1,6 +1,6 @@
-# webfetch
+# wdot
 
-A fast, stealthy headless browser fetcher built in Rust. Designed for AI agents that need to navigate dynamic web content with low token cost.
+**W**eb **D**ynamic **O**utput **T**ool — a fast, stealthy headless browser built in Rust. Designed for AI agents that need to navigate dynamic web content with low token cost.
 
 Renders JavaScript-heavy pages via headless Chrome, strips noise, and returns clean markdown. Auto-detects and solves captchas via [2Captcha](https://2captcha.com). Resists bot detection through comprehensive stealth evasions and TLS fingerprint randomization.
 
@@ -20,7 +20,10 @@ Renders JavaScript-heavy pages via headless Chrome, strips noise, and returns cl
 cargo build --release
 
 # Run (Chrome/Chromium must be installed)
-./target/release/webfetch
+./target/release/wdot
+
+# Or install it
+cargo install --path .
 
 # Fetch a page
 curl -X POST http://127.0.0.1:3100/fetch \
@@ -55,6 +58,7 @@ Fetch a page and return clean markdown.
 | `wait_for` | string | no | CSS selector to wait for before extracting |
 | `timeout_ms` | number | no | Timeout in ms (default: 30000) |
 | `include_links` | bool | no | Include extracted links (default: false) |
+| `max_tokens` | number | no | Cap output size (default: 50000). Truncates at paragraph boundaries |
 
 **Response:**
 
@@ -102,7 +106,7 @@ When `STEALTH=true` (default), the following evasions are applied:
 
 ## Captcha solving
 
-With a `TWOCAPTCHA_API_KEY` set, webfetch auto-detects and solves:
+With a `TWOCAPTCHA_API_KEY` set, wdot auto-detects and solves:
 
 - **Cloudflare Turnstile** — explicit widgets, implicit scripts, and managed challenge pages
 - **reCAPTCHA v2** — checkbox challenges
@@ -113,7 +117,7 @@ Uses the [2Captcha API v2](https://2captcha.com/api-docs) (`createTask`/`getTask
 
 ## TLS fingerprint evasion
 
-Chrome's TLS fingerprint (JA3/JA4) is well-known to bot detection services. webfetch mitigates this in two layers:
+Chrome's TLS fingerprint (JA3/JA4) is well-known to bot detection services. wdot mitigates this in two layers:
 
 1. **Built-in**: `PermuteTLSExtensions` flag randomizes cipher suite order in the TLS ClientHello
 2. **Proxy mode**: Set `PROXY_URL` to route through a TLS-spoofing proxy like [curl-impersonate](https://github.com/lwthiker/curl-impersonate) for full JA3 mimicry
