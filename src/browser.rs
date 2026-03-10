@@ -1,12 +1,15 @@
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use futures::StreamExt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+use crate::behavior::BehaviorEngine;
 use crate::captcha::CaptchaSolver;
 use crate::config::Config;
 use crate::extractor;
+use crate::reputation::signals::{detect_block_signals, SessionSignals};
+use crate::reputation::ReputationMonitor;
 use crate::stealth;
 use crate::tls;
 
@@ -15,6 +18,8 @@ pub struct BrowserPool {
     browser: Arc<Mutex<Browser>>,
     captcha_solver: Option<CaptchaSolver>,
     stealth_enabled: bool,
+    reputation: Option<Arc<ReputationMonitor>>,
+    behavior: Option<Arc<BehaviorEngine>>,
 }
 
 #[derive(Debug)]
@@ -33,7 +38,11 @@ pub struct Link {
 }
 
 impl BrowserPool {
-    pub async fn new(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        config: &Config,
+        reputation: Option<Arc<ReputationMonitor>>,
+        behavior: Option<Arc<BehaviorEngine>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut builder = BrowserConfig::builder()
             .arg("--disable-gpu")
             .arg("--no-sandbox")
@@ -46,20 +55,16 @@ impl BrowserPool {
             .arg("--mute-audio")
             .arg("--no-first-run");
 
-        // Add stealth-specific launch args
         if config.stealth {
             for arg in stealth::stealth_args() {
                 builder = builder.arg(arg);
             }
-            // TLS fingerprint evasion args
             for arg in tls::tls_evasion_args() {
                 builder = builder.arg(arg);
             }
-            // Set a realistic user-agent via Chrome flag
             builder = builder.arg(format!("--user-agent={}", stealth::user_agent()));
         }
 
-        // Proxy support for TLS fingerprint spoofing
         if let Some(ref proxy_url) = config.proxy_url {
             builder = builder.arg(tls::proxy_arg(proxy_url));
             for arg in tls::proxy_cert_args() {
@@ -75,11 +80,12 @@ impl BrowserPool {
             builder = builder.chrome_executable(path);
         }
 
-        let browser_config = builder.build().map_err(|e| format!("Browser config error: {e}"))?;
+        let browser_config = builder
+            .build()
+            .map_err(|e| format!("Browser config error: {e}"))?;
 
         let (browser, mut handler) = Browser::launch(browser_config).await?;
 
-        // Spawn the browser event handler
         tokio::spawn(async move {
             while let Some(_event) = handler.next().await {}
         });
@@ -93,6 +99,8 @@ impl BrowserPool {
             browser: Arc::new(Mutex::new(browser)),
             captcha_solver,
             stealth_enabled: config.stealth,
+            reputation,
+            behavior,
         })
     }
 
@@ -102,34 +110,57 @@ impl BrowserPool {
         wait_for: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<FetchResult, Box<dyn std::error::Error + Send + Sync>> {
+        // Check if reputation monitor says we should pause
+        if let Some(ref rep) = self.reputation {
+            if rep.is_paused().await {
+                tracing::warn!("Reputation critical — cooling down for 60s");
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            // Apply adaptive delay
+            let delay = rep.current_delay_ms().await;
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+
+        // Apply behavior pre-navigation delay
+        if let Some(ref beh) = self.behavior {
+            if let Some(mut replayer) = beh.replayer().await {
+                replayer.pre_navigate_delay().await;
+            }
+        }
+
+        let start = Instant::now();
         let browser = self.browser.lock().await;
         let page = browser.new_page("about:blank").await?;
 
-        // Apply stealth evasions BEFORE navigating to the target
         if self.stealth_enabled {
             stealth::apply(&page).await?;
         }
 
-        // Now navigate to the target URL
         page.goto(url).await?;
         page.wait_for_navigation_response().await?;
 
         let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
 
-        // If a specific selector was requested, wait for it
         if let Some(selector) = wait_for {
             let _ = tokio::time::timeout(timeout, page.find_element(selector)).await;
         } else {
-            // Default: wait for network idle via a short delay
             tokio::time::sleep(Duration::from_millis(1500)).await;
         }
 
-        // Detect and solve captchas if solver is configured
+        // Simulate human reading behavior
+        if let Some(ref beh) = self.behavior {
+            if let Some(mut replayer) = beh.replayer().await {
+                replayer.simulate_reading(&page).await;
+            }
+        }
+
+        // Detect and solve captchas
         if let Some(ref solver) = self.captcha_solver {
             solver.detect_and_solve(&page, url).await?;
         }
 
-        // Extract page content
         let html = page
             .evaluate("document.documentElement.outerHTML")
             .await?
@@ -147,10 +178,38 @@ impl BrowserPool {
             .into_value::<String>()
             .unwrap_or_else(|_| url.to_string());
 
-        // Close the page to free resources
         page.close().await?;
 
-        // Extract markdown and links
+        let response_time = start.elapsed().as_millis() as u64;
+
+        // Record reputation signals
+        if let Some(ref rep) = self.reputation {
+            let (blocked, challenge, rate_limited) = detect_block_signals(&html, 200);
+            let captcha_encountered = html.contains("g-recaptcha")
+                || html.contains("h-captcha")
+                || html.contains("cf-turnstile")
+                || html.contains("challenges.cloudflare.com");
+
+            let domain = extract_domain(url);
+
+            rep.record(SessionSignals {
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                domain,
+                captcha_encountered,
+                captcha_type: None,
+                http_status: 200,
+                blocked,
+                redirect_to_challenge: challenge,
+                response_time_ms: response_time,
+                tls_fingerprint_hash: "default".into(),
+                rate_limited,
+            })
+            .await;
+        }
+
         let markdown = extractor::html_to_markdown(&html, None);
         let links = extractor::extract_links(&html);
 
@@ -162,4 +221,17 @@ impl BrowserPool {
             links,
         })
     }
+}
+
+fn extract_domain(url: &str) -> String {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .split(':')
+        .next()
+        .unwrap_or(url)
+        .to_string()
 }
